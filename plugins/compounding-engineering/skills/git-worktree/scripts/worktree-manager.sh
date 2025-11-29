@@ -24,6 +24,47 @@ ensure_gitignore() {
   fi
 }
 
+# Copy .env files from main repo to worktree
+copy_env_files() {
+  local worktree_path="$1"
+
+  echo -e "${BLUE}Copying environment files...${NC}"
+
+  # Find all .env* files in root (excluding .env.example which should be in git)
+  local env_files=()
+  for f in "$GIT_ROOT"/.env*; do
+    if [[ -f "$f" ]]; then
+      local basename=$(basename "$f")
+      # Skip .env.example (that's typically committed to git)
+      if [[ "$basename" != ".env.example" ]]; then
+        env_files+=("$basename")
+      fi
+    fi
+  done
+
+  if [[ ${#env_files[@]} -eq 0 ]]; then
+    echo -e "  ${YELLOW}ℹ️  No .env files found in main repository${NC}"
+    return
+  fi
+
+  local copied=0
+  for env_file in "${env_files[@]}"; do
+    local source="$GIT_ROOT/$env_file"
+    local dest="$worktree_path/$env_file"
+
+    if [[ -f "$dest" ]]; then
+      echo -e "  ${YELLOW}⚠️  $env_file already exists, backing up to ${env_file}.backup${NC}"
+      cp "$dest" "${dest}.backup"
+    fi
+
+    cp "$source" "$dest"
+    echo -e "  ${GREEN}✓ Copied $env_file${NC}"
+    copied=$((copied + 1))
+  done
+
+  echo -e "  ${GREEN}✓ Copied $copied environment file(s)${NC}"
+}
+
 # Create a new worktree
 create_worktree() {
   local branch_name="$1"
@@ -70,6 +111,9 @@ create_worktree() {
 
   echo -e "${BLUE}Creating worktree...${NC}"
   git worktree add -b "$branch_name" "$worktree_path" "$from_branch"
+
+  # Copy environment files
+  copy_env_files "$worktree_path"
 
   echo -e "${GREEN}✓ Worktree created successfully!${NC}"
   echo ""
@@ -139,6 +183,38 @@ switch_worktree() {
   echo -e "${GREEN}Switching to worktree: $worktree_name${NC}"
   cd "$worktree_path"
   echo -e "${BLUE}Now in: $(pwd)${NC}"
+}
+
+# Copy env files to an existing worktree (or current directory if in a worktree)
+copy_env_to_worktree() {
+  local worktree_name="$1"
+  local worktree_path
+
+  if [[ -z "$worktree_name" ]]; then
+    # Check if we're currently in a worktree
+    local current_dir=$(pwd)
+    if [[ "$current_dir" == "$WORKTREE_DIR"/* ]]; then
+      worktree_path="$current_dir"
+      worktree_name=$(basename "$worktree_path")
+      echo -e "${BLUE}Detected current worktree: $worktree_name${NC}"
+    else
+      echo -e "${YELLOW}Usage: worktree-manager.sh copy-env [worktree-name]${NC}"
+      echo "Or run from within a worktree to copy to current directory"
+      list_worktrees
+      return 1
+    fi
+  else
+    worktree_path="$WORKTREE_DIR/$worktree_name"
+
+    if [[ ! -d "$worktree_path" ]]; then
+      echo -e "${RED}Error: Worktree not found: $worktree_name${NC}"
+      list_worktrees
+      return 1
+    fi
+  fi
+
+  copy_env_files "$worktree_path"
+  echo ""
 }
 
 # Clean up completed worktrees
@@ -213,6 +289,9 @@ main() {
     switch|go)
       switch_worktree "$2"
       ;;
+    copy-env|env)
+      copy_env_to_worktree "$2"
+      ;;
     cleanup|clean)
       cleanup_worktrees
       ;;
@@ -235,16 +314,27 @@ Git Worktree Manager
 Usage: worktree-manager.sh <command> [options]
 
 Commands:
-  create <branch-name> [from-branch]  Create new worktree
+  create <branch-name> [from-branch]  Create new worktree (copies .env files automatically)
                                       (from-branch defaults to main)
   list | ls                           List all worktrees
   switch | go [name]                  Switch to worktree
+  copy-env | env [name]               Copy .env files from main repo to worktree
+                                      (if name omitted, uses current worktree)
   cleanup | clean                     Clean up inactive worktrees
   help                                Show this help message
 
+Environment Files:
+  - Automatically copies .env, .env.local, .env.test, etc. on create
+  - Skips .env.example (should be in git)
+  - Creates .backup files if destination already exists
+  - Use 'copy-env' to refresh env files after main repo changes
+
 Examples:
   worktree-manager.sh create feature-login
+  worktree-manager.sh create feature-auth develop
   worktree-manager.sh switch feature-login
+  worktree-manager.sh copy-env feature-login
+  worktree-manager.sh copy-env                   # copies to current worktree
   worktree-manager.sh cleanup
   worktree-manager.sh list
 
